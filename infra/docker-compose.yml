@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # Zookeeper for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.3
+    hostname: zookeeper
+    ports:
+      - '2181:2181'
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - infra-network
+
+  # Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    hostname: kafka
+    ports:
+      - '9092:9092'
+      - '9101:9101'
+      - '29092:29092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - infra-network
+
+  # Kafka Topics Init
+  kafka-topics:
+    image: confluentinc/cp-kafka:7.5.3
+    depends_on:
+      - kafka
+    networks:
+      - infra-network
+    entrypoint: ['/bin/sh', '-c']
+    command: |
+      "
+      while ! nc -z kafka 9092; do
+        echo 'Waiting for Kafka to be ready...'
+        sleep 1
+      done
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic default-events --partitions 2 --replication-factor 1
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic critical-events --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic retry-events --partitions 2 --replication-factor 1
+      "
+
+  # MongoDB
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    hostname: mongodb
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+      MONGO_INITDB_DATABASE: EVENT_SYSTEM
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - infra-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # Mongo Express UI
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-express
+    hostname: mongo-express
+    ports:
+      - '8081:8081'
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: admin
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - infra-network
+
+  # Postgres
+  postgres:
+    image: 'postgres'
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: user        # Specify your PostgreSQL username
+      POSTGRES_PASSWORD: password  # Specify your PostgreSQL password
+      POSTGRES_DB: mydb          # Specify your PostgreSQL database name
+    volumes:
+      - database:/var/lib/postgresql/data
+    networks:
+      - infra-network
+
+  # Redis - Cache
+  redis_cache:
+    image: 'redis:alpine'
+    command: redis-server
+    ports:
+      - '6379:6379'
+    volumes:
+      - cache:/var/lib/redis
+      - ./misc/cache_conf:/usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    networks:
+      - infra-network
+
+  # Redis - Queue
+  redis_queue:
+    image: 'redis:alpine'
+    command: redis-server
+    ports:
+      - '6479:6379'
+    volumes:
+      - queue:/var/lib/redis
+      - ./misc/queue_conf:/usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    networks:
+      - infra-network
+
+networks:
+  infra-network:
+    driver: bridge
+
+volumes:
+  kafka_data:
+  mongodb_data:
+  database:
+  cache:
+  queue:
